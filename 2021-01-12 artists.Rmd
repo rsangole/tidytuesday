@@ -1,0 +1,371 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(tidyr)
+library(ggplot2)
+library(plotly)
+library(ggrepel)
+library(ggdark)
+library(ggtext)
+library(patchwork)
+
+artists <- data.table::fread("~/github/tidytues/tidytuesday/data/2021/2021-01-12/artists.csv") %>% 
+  mutate(gender = ifelse(is.na(gender), "Unknown", gender),
+         gender = factor(gender,levels = c("Male","Female", "Unknown"), ordered = TRUE),
+         life_yr = yearOfDeath - yearOfBirth,
+         pre_1850 = yearOfBirth < 1850,
+         name_len = stringr::str_length(name) - 2) %>% 
+  separate(col = "placeOfBirth", sep = ",", into = c("birth_city", "birth_country"), remove = F) %>% 
+  separate(col = "placeOfDeath", sep = ",", into = c("death_city", "death_country"), remove = F) %>% 
+  mutate(moved_countries = birth_country != death_country,
+         birth_country = ifelse(is.na(birth_country), "Unknown", birth_country),
+         death_country = ifelse(is.na(death_country), "Unknown", death_country))
+artwork <- data.table::fread("~/github/tidytues/tidytuesday/data/2021/2021-01-12/artwork.csv") %>% 
+  mutate(artistRole = as.factor(artistRole),
+         medium = as.factor(medium),
+         units = as.factor(units),
+         area = width * height,
+         title_len = stringr::str_length(title)) %>% 
+  left_join(y = artists %>% select(name, gender, yearOfBirth, birth_city, birth_country, life_yr), by = c("artist"="name"))
+artists
+artwork
+```
+
+```{r fig.height=5, fig.width=7}
+artists %>% 
+  ggplot(aes(x = life_yr, fill = pre_1850)) +
+  geom_histogram() +
+  facet_grid(~gender) + 
+  ggdark::dark_theme_classic()
+
+artists %>% 
+  ggplot(aes(y = life_yr, x = yearOfBirth, color = gender)) +
+  geom_point(alpha = 0.75) +
+  geom_smooth() + 
+  ggdark::dark_theme_classic()
+
+artists %>% 
+  ggplot(aes(y = moved_countries, x = yearOfBirth, color = gender)) +
+  geom_point(alpha = 0.75) +
+  ggdark::dark_theme_classic()
+
+```
+
+```{r fig.height=4, fig.width=15}
+artists %>% 
+  select(year = yearOfBirth, moved_countries, yearOfBirth) %>% 
+  group_by(year) %>% 
+  count(moved_countries) %>% 
+  # tidyr::pivot_wider(names_from = moved_countries, values_from = n) %>% 
+  ggplot(aes(x = year, y = n, color = moved_countries)) +
+  geom_line() +
+  ggdark::dark_theme_classic()
+```
+
+```{r fig.height=4, fig.width=15}
+ggplot(artists) +
+  # geom_point(aes(x = yearOfBirth, y = life_yr), color = "gray30", alpha = 0.5, size = 2) +
+  # geom_point(aes(x = yearOfDeath, y = life_yr), color = "gray30", alpha = 0.5, size = 2) +
+  geom_segment(aes(x = yearOfBirth, xend = yearOfDeath, y = life_yr, yend = life_yr, color = gender), alpha = 0.7) +
+  ggdark::dark_theme_classic()
+```
+
+```{r fig.height=5, fig.width=6}
+artists %>% 
+  group_by(birth_country, gender) %>% 
+  count() %>%
+  group_by(birth_country) %>% 
+  mutate(n_sum = sum(n)) %>% 
+  ungroup() %>%
+  top_n(20, n_sum) %>% 
+  ggplot() +
+  geom_col(aes(y = forcats::fct_reorder(birth_country, n_sum), x = n, fill = gender)) +
+  # scale_x_log10() + 
+  ggdark::dark_theme_classic()
+```
+```{r fig.height=12, fig.width=10}
+artists %>% 
+  group_by(birth_country, gender) %>% 
+  count() %>% 
+  tidyr::pivot_wider(names_from = "gender", values_from = "n") %>%
+  tidyr::replace_na(replace = list(Female = 0, Male = 0, Unknown = 0)) %>% 
+  mutate(pc_fem = Female / (Male + Female + Unknown),
+         total = Female + Male + Unknown) %>% # View() 
+  tidyr::drop_na(pc_fem) %>%
+  ggplot() + 
+  geom_point(aes(x = forcats::fct_reorder(birth_country, pc_fem), y = pc_fem, size = total), color = "gray70", alpha = 0.8) +
+  # geom_point(aes(x = forcats::fct_reorder(birth_country, pc_fem), y = pc_fem, size = Female), color = "forestgreen", alpha = 0.8) +
+  scale_size(range = c(1, 12)) + 
+  # scale_size(limits = c(0, 1000), range = c(0, 10)) + 
+  # geom_boxplot() + 
+  ggdark::dark_theme_classic() +
+  theme(#axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+        axis.line = element_blank(),
+        panel.grid.major.x = element_line(colour = "gray10")) + 
+  scale_y_continuous(labels = scales::label_percent()) + 
+  coord_flip()
+  # theme(legend.position = "none")
+```
+```{r fig.height=5, fig.width=12}
+artists %>% 
+  group_by(yearOfBirth, birth_country, gender) %>% 
+  count() %>% 
+  tidyr::pivot_wider(names_from = "gender", values_from = "n") %>% 
+  mutate(pc_fem = Female / (Male + Female)) %>% 
+  tidyr::drop_na(pc_fem) %>%
+  ggplot(aes(x = yearOfBirth, y = pc_fem, color = birth_country)) + 
+  geom_point() + 
+  ggdark::dark_theme_classic() #+ 
+  # theme(legend.position = "none")
+```
+
+```{r fig.height=7, fig.width=9}
+artists %>% 
+  separate(name, sep = "[,\\s].", into = c("lname", "fname", "mname"), extra = "merge") %>%   
+  mutate(fname_len = stringr::str_length(fname)) %>% 
+  group_by(gender, yearOfBirth) %>% 
+  summarise(med_len = median(fname_len, na.rm = TRUE)) %>% 
+  ggplot(aes(x = yearOfBirth, y = med_len, color = gender)) + 
+  # geom_point(alpha = 0.4, size = 2) +
+  geom_smooth(se = F, show.legend = F) + 
+  ggdark::dark_theme_classic() +
+  scale_color_manual(values = list("Male" = "#e5e5e5", "Female" = "#f4a261", "Unknown" = "#e76f51"))
+```
+
+```{r}
+artwork %>% 
+  skimr::skim()
+```
+```{r}
+# devtools::install_github('Ather-Energy/ggTimeSeries')
+library(ggTimeSeries)
+```
+
+```{r}
+medium_dat <-
+  artwork %>%
+  count(year, medium) %>% 
+  pivot_wider(names_from = medium, values_from = n) %>% 
+  pivot_longer(-year) %>% 
+  tidyr::replace_na(list(value = 0))
+medium_dat
+```
+```{r}
+medium_dat %>% 
+  group_by(name) %>% 
+  summarise(v = sum(value)) %>% 
+  top_n(100, v) %>% 
+  arrange(-v)
+```
+
+```{r}
+medium_cleaned <- medium_dat %>% 
+  mutate(medium_cleaned = case_when(
+    grepl(pattern = "Graphite", x = name) ~ "Graphite",
+    grepl(pattern = "Oil paint", x = name) ~ "Oil Paint",
+    grepl(pattern = "Screenprint", x = name) ~ "Screenprint",
+    grepl(pattern = "Watercolour", x = name) ~ "Watercolour",
+    grepl(pattern = "Ink on paper", x = name) ~ "Ink",
+    grepl(pattern = "photograph|Photograph", x = name) ~ "Photograph",
+    grepl(pattern = "engraving|Engraving", x = name) ~ "Engraving",
+    grepl(pattern = "chalk|Chalk", x = name) ~ "Chalk",
+    name == "NA" ~ "Other"
+  )) %>% 
+  filter(!is.na(medium_cleaned))
+```
+
+```{r}
+medium_cleaned %>% 
+  ggplot(aes(x = year, y = value, fill = medium_cleaned)) + 
+  geom_area()
+```
+```{r fig.height=8, fig.width=12}
+make_plot <- function(medium_dat,
+                      yr_max = 1900,
+                      num_years = 100) {
+  yr_min <- yr_max - num_years
+  
+  dat <- medium_dat %>%
+    filter(year > yr_min, year < yr_max)
+  
+  # top_mediums <-  dat %>%
+  #   group_by(name) %>%
+  #   summarise(n = sum(value)) %>%
+  #   filter(name != "NA") %>%
+  #   top_n(n = 5, wt = n) %>%
+  #   arrange(-n) %>% 
+  #   pull(name)
+  
+  dat %>%
+    # filter(name %in% top_mediums) %>%
+    mutate(medium_cleaned = factor(medium_cleaned, levels = medium_cleaned)) %>% 
+    ggplot(aes(x = year, y = value)) +
+    stat_steamgraph(aes(group = medium_cleaned, fill = name)) +
+    # theme_linedraw() +
+    scale_x_continuous(breaks = seq(yr_min, yr_max, 10)) + 
+    theme(legend.title = element_blank(),
+          axis.line = element_line(size = 0),
+          axis.line.x.top = element_line(size = 0),
+          plot.background = element_rect(fill = "white"),
+          panel.background = element_rect(fill = "white"),
+          axis.text.y = element_blank(),
+          axis.ticks.y = element_blank(),
+          panel.grid.major.x = element_line(linetype = "dotted", size = 0.3, colour = "gray60")
+          ) +
+    labs(x = "", y = "")
+}
+
+p1 <- make_plot(medium_cleaned, 1860, 100)
+p2 <- make_plot(medium_cleaned, 2010, 100)
+
+library(cowplot)
+cowplot::plot_grid(p1, p2, nrow = 2, align = "hv")
+
+```
+
+```{r fig.height=8, fig.width=12}
+make_plot <- function(medium_dat,
+                      yr_max = 1900,
+                      num_years = 100) {
+  yr_min <- yr_max - num_years
+  
+  dat <- medium_dat %>%
+    filter(year > yr_min, year < yr_max)
+  
+  top_mediums <-  dat %>%
+    group_by(name) %>%
+    summarise(n = sum(value)) %>%
+    filter(name != "NA") %>%
+    top_n(n = 5, wt = n) %>%
+    arrange(-n) %>% 
+    pull(name)
+  
+  dat %>%
+    filter(name %in% top_mediums) %>%
+    mutate(name = factor(name, levels = top_mediums, labels = stringr::str_trunc(top_mediums, width = 25))) %>% 
+    ggplot(aes(x = year, y = value)) +
+    stat_steamgraph(aes(group = name, fill = name)) +
+    # theme_linedraw() +
+    scale_x_continuous(breaks = seq(yr_min, yr_max, 10)) + 
+    theme(legend.title = element_blank(),
+          axis.line = element_line(size = 0),
+          axis.line.x.top = element_line(size = 0),
+          plot.background = element_rect(fill = "white"),
+          panel.background = element_rect(fill = "white"),
+          axis.text.y = element_blank(),
+          axis.ticks.y = element_blank(),
+          panel.grid.major.x = element_line(linetype = "dotted", size = 0.3, colour = "gray60")
+          ) +
+    labs(x = "", y = "")
+}
+
+p1 <- make_plot(medium_dat, 1860, 100)
+p2 <- make_plot(medium_dat, 2010, 100)
+
+library(cowplot)
+cowplot::plot_grid(p1, p2, nrow = 2, align = "hv")
+
+```
+```{r fig.height=5, fig.width=12}
+make_plot <- function(medium_dat,
+                      yr_max = 1900,
+                      num_years = 100) {
+  yr_min <- yr_max - num_years
+  
+  dat <- medium_dat %>%
+    filter(year > yr_min, year < yr_max)
+  
+  top_mediums <-  dat %>%
+    group_by(name) %>%
+    summarise(n = sum(value)) %>%
+    filter(name != "NA") %>%
+    top_n(n = 5, wt = n) %>%
+    arrange(-n) %>% 
+    pull(name)
+  
+  dat %>%
+    filter(name %in% top_mediums) %>%
+    mutate(name = factor(name, levels = top_mediums)) %>% 
+    ggplot(aes(x = year, y = value)) +
+    geom_area(aes(fill = name)) +
+    theme_bw() +
+    scale_x_continuous(breaks = seq(yr_min, yr_max, 10))
+}
+
+p1 <- make_plot(medium_dat, 1860, 100)
+p2 <- make_plot(medium_dat, 2010, 100)
+
+p1 / p2
+```
+
+```{r}
+gender_dat <-
+  artwork %>% select(year, gender) %>% 
+  filter(gender != "Unknown") %>% 
+  tidyr::drop_na() %>% 
+  group_by(year) %>% 
+  count(gender) %>% 
+  pivot_wider(names_from = gender, values_from = n) %>% 
+  pivot_longer(-year) %>% 
+  tidyr::replace_na(list(value = 0))
+gender_dat
+
+dat <- gender_dat %>% 
+  filter(year > 1750, year < 1850)
+
+dat %>% 
+  ggplot(aes(x = year, y = value)) + 
+  stat_steamgraph(aes(group = name, fill = name)) +
+  theme_bw() + 
+  scale_x_continuous(breaks = seq(1750, 1850, 10))-> p1
+
+dat <- gender_dat %>% 
+  filter(year >= 1950, year <= 2010)
+
+dat %>% 
+  ggplot(aes(x = year, y = value)) + 
+  stat_steamgraph(aes(group = name, fill = name)) +
+  theme_bw() + 
+  scale_x_continuous(breaks = seq(1950, 2010, 10))-> p2
+
+library(patchwork)
+p1 / p2
+```
+
+```{r}
+title_len_dat <-
+  artwork %>% select(year, gender, area) %>% 
+  filter(gender != "Unknown") %>% 
+  tidyr::drop_na() %>% 
+  group_by(year, gender) %>% 
+  summarise(mean_title_len = median(area)) %>% 
+  pivot_wider(names_from = gender, values_from = mean_title_len) %>% 
+  pivot_longer(-year) %>% 
+  tidyr::replace_na(list(value = 0))
+title_len_dat
+
+dat <- title_len_dat %>% 
+  filter(year > 1750, year < 1850)
+
+dat %>% 
+  ggplot(aes(x = year, y = value)) + 
+  stat_steamgraph(aes(group = name, fill = name)) +
+  theme_bw() + 
+  scale_x_continuous(breaks = seq(1750, 1850, 10))-> p1
+
+dat <- title_len_dat %>% 
+  filter(year >= 1900, year <= 2010)
+
+dat %>% 
+  ggplot(aes(x = year, y = value)) + 
+  stat_steamgraph(aes(group = name, fill = name)) +
+  theme_bw() + 
+  scale_x_continuous(breaks = seq(1900, 2010, 10))-> p2
+
+library(patchwork)
+p1 / p2
+```
